@@ -14,18 +14,105 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import sys
+import os
 
 try:
-    import configparser.ConfigParser as confparser
+    from configparser import ConfigParser as confparser
 except ImportError:
-    import ConfigParser.ConfigParser as confparser
+    from ConfigParser import ConfigParser as confparser
 
 try:
     import pygit2
 except:
     sys.exit(1)
 
+_DEFAULTPATH=os.path.expanduser("~/.gitcheckver")
 
+class gitcheckver(object):
 
+    def __init__(self, confpath=_DEFAULTPATH):
+        self.conf=confparser()
+        self.confpath=confpath
+        self.getconfig()
+        self.config_changed = False
+        self.repos = self.conf.sections()
 
+    def getconfig(self):
+        if(os.path.exists(self.confpath)):
+            self.conf.read(self.confpath)
+        else:
+            print("Configuration file is empty! " +
+                    "Please set up some repos to track")
+            sys.exit(2)
+
+    def get_repo(self, repo_url, repo_path=None):
+            if(os.path.exists(repo_path)):
+                repo_path = pygit2.discover_repository(repo_path)
+                if(repo_path):
+                    print("Found existing repository")
+                repo = pygit2.Repository(repo_path)
+                try:
+                    for remote in repo.remotes:
+                        remote.fetch()
+                        print("Updated existing repository.")
+                except Exception as e:
+                    print(e)
+                    repo = None
+            else:
+                try:
+                    repo = pygit2.clone_repository(repo_url, repo_path)
+                    print("Cloned clean repository.")
+                except Exception as e:
+                    print(e)
+                    repo = None
+
+            return repo
+
+    def update_repo(self, repo_name):
+            repo_url = self.conf.get(repo_name, 'url')
+            repo_path = os.path.expanduser(self.conf.get(repo_name, 'path',
+                            fallback=None))
+            try:
+                repo = self.get_repo(repo_url, repo_path)
+                print("{}: {}".format(repo_name,
+                    repo.describe(abbreviated_size=0)))
+            except Exception as e:
+                print(e)
+                repo = None
+
+            return repo
+
+    def check_versions(self):
+        for repo in self.repos:
+            repo_name = repo
+            old_ver  = self.conf.get(repo_name, 'ver', fallback=0.0)
+            try:
+                repo = self.update_repo(repo_name)
+                repo_ver = repo.describe(abbreviated_size=0)
+            except:
+                print("Couldn't get a version")
+                pass
+
+                if(repo_ver > old_ver):
+                    print("{}: has been updated to version {}".format(repo_name,
+                        repo_ver))
+                    self.conf.set(repo_name, 'ver', repo_ver)
+                    self.config_changed = True
+
+    def close(self):
+        if(self.config_changed):
+            with open(self.confpath, 'w') as configfile:
+                self.conf.write(configfile)
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main = gitcheckver()
+    print(main.confpath)
+    print(main.conf.sections())
+    for key in main.conf['mackup']:
+        print("{}:{}".format(key, main.conf['mackup'].get(key)))
+    main.check_versions()
+    for key in main.conf['mackup']:
+        print("{}:{}".format(key, main.conf['mackup'].get(key)))
+    main.close()
 # vim: set ts=4 sw=4 et:
