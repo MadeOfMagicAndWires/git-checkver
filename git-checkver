@@ -72,11 +72,12 @@ class gitcheckver(object):
     def get_config(self):
 
         if(os.path.exists(self.confpath)):
-            self.log.debug("Using configuration file {}.".format(self.confpath))
+            self.log.debug("Using configuration file {}."
+                           .format(self.confpath))
             self.conf.read(self.confpath)
         else:
             self.log.critical("Configuration file is empty! " +
-                  "Please set up some repos to track")
+                              "Please set up some repos to track")
             sys.exit(2)
 
     def get_tmpdir(self):
@@ -86,33 +87,51 @@ class gitcheckver(object):
         return self.tmpdir
 
     def update_repo(self, repo_url, repo_path=None):
-            if(os.path.exists(repo_path)):
-                repo_path = pygit2.discover_repository(repo_path)
-                if(repo_path):
-                    repo = pygit2.Repository(repo_path)
-                    self.log.debug("Found local repo for {}"
-                                   .format(repo_url))
-                try:
-                    for remote in repo.remotes:
-                        remote.fetch()
-                        self.log.debug("Updated local repo {}"
-                                       .format(repo_path))
-                except Exception as e:
-                    self.log.error("Couldn't update repo.")
-                    self.log.debug("'{}: {}'".format(type(e).__name__, e))
-                    repo = None
-            else:
-                try:
-                    repo = pygit2.clone_repository(repo_url,
-                                                   repo_path,
-                                                   bare=True)
-                    self.log.debug("Cloned a copy of {}".format(repo_url))
-                except Exception as e:
-                    self.log.error("Couldn't update repo.")
-                    self.log.debug("'{}: {}'".format(type(e).__name__, e))
-                    repo = None
 
-            return repo
+        class BreakCallbacks(pygit2.RemoteCallbacks):
+            def credentials(self, url, username_from_url, allowed_types):
+                # TODO: implement actual authentication
+                # see https://github.com/libgit2/pygit2/issues/428
+                # and http://www.pygit2.org/remotes.html?highlight=credentials#credentials
+                raise NotImplementedError(
+                        "Authentication is not yet supported.")
+
+        if(os.path.exists(repo_path)):
+            repo_path = pygit2.discover_repository(repo_path)
+            if(repo_path):
+                repo = pygit2.Repository(repo_path)
+                self.log.debug("Found local repo for {}"
+                               .format(repo_url))
+            try:
+                for remote in repo.remotes:
+                    remote.fetch(callbacks=BreakCallbacks())
+                    self.log.debug("Updated remote {}"
+                                   .format(remote.name))
+
+            except NotImplementedError as e:
+                self.log.warning("Couldn't update remote {}."
+                                 .format(remote.name))
+                self.log.debug("'{}: {}'".format(type(e).__name__,
+                                                 e))
+                pass
+            except Exception as e:
+                self.log.warning("Couldn't update remote {}."
+                                 .format(remote.name))
+                self.log.debug("'{}: {}'".format(type(e).__name__,
+                                                 e))
+                repo = None
+        else:
+            try:
+                repo = pygit2.clone_repository(repo_url,
+                                               repo_path,
+                                               bare=True)
+                self.log.debug("Cloned a copy of {}".format(repo_url))
+            except Exception as e:
+                self.log.error("Couldn't update repo.")
+                self.log.debug("'{}: {}'".format(type(e).__name__, e))
+                repo = None
+
+        return repo
 
     def check_versions(self):
         updated = {}
@@ -125,6 +144,9 @@ class gitcheckver(object):
 
             repo = self.update_repo(repo_url,
                                     os.path.expanduser(repo_path))
+
+            if repo:
+                self.log.debug("Updated repo {}.".format(repo_name))
             try:
                 old_ver = self.conf.get(repo_name, 'ver', fallback="0.0")
                 new_ver, repo_ver = self.check_version(repo,
