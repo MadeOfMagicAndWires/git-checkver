@@ -19,6 +19,7 @@ import os
 import tempfile
 import shutil
 import re
+import logging
 
 try:
     from configparser import ConfigParser as confparser
@@ -31,31 +32,51 @@ except:
     print("Could not find the pygit2 package")
     sys.exit(1)
 
-_DEFAULTPATH=os.path.expanduser("~/.gitcheckver")
+_DEFAULTPATH = os.path.expanduser("~/.gitcheckver")
+
 
 class gitcheckver(object):
 
     def __init__(self, confpath=_DEFAULTPATH, verbose=True):
-        self.conf=confparser()
-        self.verbose_mode = verbose
-        self.confpath=confpath
+
+        self.log = self.get_log("gitcheckver")
+        self.verbose = verbose
+        if self.verbose:
+            self.log.setLevel(logging.DEBUG)
+            self.log.debug("Running in verbose mode")
+        else:
+            self.log.setLevel(logging.INFO)
+
+        self.conf = confparser()
+        self.confpath = confpath
         self.get_config()
         self.config_changed = False
         self.repos = self.conf.sections()
         self.tmpdir = None
 
-    def verbose(self, msg):
-        if(self.verbose_mode):
-            print(msg)
+    def get_log(self, name):
+        # Create a log
+        log = logging.getLogger(name)
+
+        # Create handlers and their formatters
+        stdh = logging.StreamHandler()
+
+        # Add handlers to log
+        log.addHandler(stdh)
+
+        # Set handlers to DEBUG
+        stdh.setLevel(logging.DEBUG)
+
+        return log
 
     def get_config(self):
 
         if(os.path.exists(self.confpath)):
-            self.verbose("Using configuration file {}.".format(self.confpath))
+            self.log.debug("Using configuration file {}.".format(self.confpath))
             self.conf.read(self.confpath)
         else:
-            print("Configuration file is empty! " +
-                    "Please set up some repos to track")
+            self.log.critical("Configuration file is empty! " +
+                  "Please set up some repos to track")
             sys.exit(2)
 
     def get_tmpdir(self):
@@ -69,23 +90,26 @@ class gitcheckver(object):
                 repo_path = pygit2.discover_repository(repo_path)
                 if(repo_path):
                     repo = pygit2.Repository(repo_path)
-                    self.verbose("Found local repo for {}"\
-                            .format(repo_url))
+                    self.log.debug("Found local repo for {}"
+                                   .format(repo_url))
                 try:
                     for remote in repo.remotes:
                         remote.fetch()
-                        self.verbose("Updated local repo {}"\
-                                .format(repo_path))
+                        self.log.debug("Updated local repo {}"
+                                       .format(repo_path))
                 except Exception as e:
-                    print(e)
+                    self.log.error("Couldn't update repo.")
+                    self.log.debug("'{}: {}'".format(type(e).__name__, e))
                     repo = None
             else:
                 try:
-                    repo = pygit2.clone_repository(repo_url, repo_path,
-                            bare=True)
-                    self.verbose("Cloned a copy of {}".format(repo_url))
+                    repo = pygit2.clone_repository(repo_url,
+                                                   repo_path,
+                                                   bare=True)
+                    self.log.debug("Cloned a copy of {}".format(repo_url))
                 except Exception as e:
-                    print(e)
+                    self.log.error("Couldn't update repo.")
+                    self.log.debug("'{}: {}'".format(type(e).__name__, e))
                     repo = None
 
             return repo
@@ -100,22 +124,24 @@ class gitcheckver(object):
                 repo_path = os.path.join(self.get_tmpdir(), repo_name)
 
             repo = self.update_repo(repo_url,
-                    os.path.expanduser(repo_path))
+                                    os.path.expanduser(repo_path))
             try:
                 old_ver = self.conf.get(repo_name, 'ver', fallback="0.0")
-                new_ver, repo_ver = self.check_version(repo, old_ver, repo_name)
+                new_ver, repo_ver = self.check_version(repo,
+                                                       old_ver,
+                                                       repo_name)
                 if (new_ver):
-                   updated[repo_name] = repo_ver
+                    updated[repo_name] = repo_ver
             except Exception:
                 pass
 
         self.notify_updated(updated)
 
-    def check_version(self, repo , old_ver, repo_name):
+    def check_version(self, repo, old_ver, repo_name):
         tag_regex = re.compile('^refs/tags/')
         tags = filter(lambda r: tag_regex.match(r),
-                        repo.listall_references())
-        repo_ver = re.sub( tag_regex, '', max(tags))
+                      repo.listall_references())
+        repo_ver = re.sub(tag_regex, '', max(tags))
 
         if(repo_ver > old_ver):
             self.conf.set(repo_name, 'ver', repo_ver)
@@ -126,7 +152,7 @@ class gitcheckver(object):
 
     def notify_updated(self, updated_dict=dict()):
         for repo, version in updated_dict.items():
-            print("{} was updated to {}".format(repo, version))
+            self.log.info("{} was updated to {}".format(repo, version))
 
     def close(self):
         if(self.config_changed):
@@ -135,6 +161,7 @@ class gitcheckver(object):
         if(self.tmpdir):
             shutil.rmtree(self.tmpdir)
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main = gitcheckver()
