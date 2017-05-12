@@ -37,16 +37,9 @@ _DEFAULTPATH = os.path.expanduser("~/.gitcheckver")
 
 class gitcheckver(object):
 
-    def __init__(self, confpath=_DEFAULTPATH, verbose=True):
+    def __init__(self, confpath=_DEFAULTPATH, verbose=logging.INFO):
 
-        self.log = self.get_log("gitcheckver")
-        self.verbose = verbose
-        if self.verbose:
-            self.log.setLevel(logging.DEBUG)
-            self.log.debug("Running in verbose mode")
-        else:
-            self.log.setLevel(logging.INFO)
-
+        self.log = self.get_log("gitcheckver", verbose)
         self.conf = confparser()
         self.confpath = confpath
         self.get_config()
@@ -54,11 +47,12 @@ class gitcheckver(object):
         self.repos = self.conf.sections()
         self.tmpdir = None
 
-    def get_log(self, name):
+    def get_log(self, name, level):
         # Get root logger,
         # change its name to something other than root.
         log = logging.getLogger()
         log.name = name
+        log.setLevel(level)
 
         # Create handlers and their formatters
         sth = logging.StreamHandler()
@@ -69,7 +63,7 @@ class gitcheckver(object):
         log.addHandler(sth)
 
         # Set handlers to DEBUG
-        sth.setLevel(logging.DEBUG)
+        sth.setLevel(level)
 
         return log
 
@@ -136,6 +130,8 @@ class gitcheckver(object):
         return repo
 
     def check_versions(self):
+
+        self.log.info("Fetching versions.")
         updated = {}
         old_log = self.log
         for repo in self.repos:
@@ -150,7 +146,7 @@ class gitcheckver(object):
                                     os.path.expanduser(repo_path))
 
             if repo:
-                self.log.debug("Updated repo.")
+                self.log.info("Fetched version.")
             try:
                 old_ver = self.conf.get(repo_name, 'ver', fallback="0.0")
                 new_ver, repo_ver = self.check_version(repo,
@@ -182,7 +178,7 @@ class gitcheckver(object):
             for repo, version in updated_dict.items():
                 self.log.info("{} was updated to {}".format(repo, version))
         else:
-            self.log.info("Nothing updated.")
+            self.log.info("No new versions found.")
 
     def close(self):
         if(self.config_changed):
@@ -194,7 +190,43 @@ class gitcheckver(object):
 
 
 if __name__ == "__main__":
-    main = gitcheckver()
+    """Run the program with its command line parameters.
+
+    Possible Parameters:
+    -v: Run in verbose (print debug messages; off by default)
+    -q: Run silently (only print warnings/errors)
+    """
+    verbose_mode = logging.INFO
+    verbose_changed = False
+    if len(sys.argv) > 1:
+        for arg in sys.argv[1:]:
+            # run in verbose
+            if arg == '-v':
+                # can't run -v and -q together, take whichever comes first
+                if not verbose_changed:
+                    verbose_mode = logging.DEBUG
+                    verbose_changed = True
+                    print("Running verbose.")
+                else:
+                    pass
+
+            # run silently
+            elif arg == '-q':
+                # can't run -v and -q together, take whichever comes first
+                if not verbose_changed:
+                    verbose_mode = logging.WARNING
+                    verbose_changed = True
+                else:
+                    pass
+
+            # default
+            else:
+                pass
+
+    main = gitcheckver(confpath=_DEFAULTPATH, verbose=verbose_mode)
+
+    # Check the versions, then close.
     main.check_versions()
     main.close()
+
 # vim: set ts=4 sw=4 et:
