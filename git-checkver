@@ -32,19 +32,36 @@ except:
     print("Could not find the pygit2 package")
     sys.exit(1)
 
-_DEFAULTPATH = os.path.expanduser("~/.gitcheckver")
+_DEFAULT_PATH = os.path.expanduser("~/.gitcheckver/config")
 
+_DEFAULT_CONFIG =     {
+        "repo_list": "~/.gitcheckver/repolist.cfg"
+    }
 
 class gitcheckver(object):
 
-    def __init__(self, confpath=_DEFAULTPATH, verbose=logging.INFO):
+    def __init__(self, confpath=_DEFAULT_PATH, verbose=logging.INFO):
 
+        # initiate logging
         self.log = self.get_log("gitcheckver", verbose)
-        self.conf = confparser()
-        self.confpath = confpath
-        self.get_config()
+
+        # initiate and read configuration
+        self.confpath = os.path.expanduser(confpath)
+        self.conf = confparser(
+                default_section="general",
+                defaults=_DEFAULT_CONFIG)
         self.config_changed = False
-        self.repos = self.conf.sections()
+        self.parse_config(self.confpath, conf=self.conf)
+
+        # get list of repos
+        self.log.debug("repo file: {}.".format(self.conf.get("general",
+            "repo_list")))
+        self.repo_conf = self.parse_config(self.conf.get("general",
+                                                         "repo_list"))
+        self.repos = self.repo_conf.sections()
+        self.log.debug("Repoplist {}".format(self.repo_conf.sections()))
+
+        # Used for temporary dir
         self.tmpdir = None
 
     def get_log(self, name, level):
@@ -67,16 +84,25 @@ class gitcheckver(object):
 
         return log
 
-    def get_config(self):
+    def parse_config(self, path,conf=None):
+        """ Read a configuration from file
 
-        if(os.path.exists(self.confpath)):
-            self.log.debug("Using configuration file {}."
-                           .format(self.confpath))
-            self.conf.read(self.confpath)
-        else:
-            self.log.critical("Configuration file is empty! " +
-                              "Please set up some repos to track")
-            sys.exit(2)
+        Arguments:
+        path: String or Path object to the file.
+        """
+
+        self.log.debug("Parsing conf in {}.".format(path))
+        if not conf:
+            conf = confparser()
+
+        # Read configuration from file
+        read_config = conf.read(os.path.expanduser(path))
+        if not read_config:
+            self.log.warning("Found no or empty configuration file.")
+
+        self.log.debug("parse_config: {}".format(conf.sections()))
+
+        return conf
 
     def get_tmpdir(self):
         if not self.tmpdir:
@@ -137,8 +163,8 @@ class gitcheckver(object):
         for repo in self.repos:
             self.log = old_log.getChild(repo)
             repo_name = repo
-            repo_url = self.conf.get(repo_name, 'url')
-            repo_path = self.conf.get(repo_name, 'path', fallback=None)
+            repo_url = self.repo_conf.get(repo_name, 'url')
+            repo_path = self.repo_conf.get(repo_name, 'path', fallback=None)
             if not repo_path:
                 repo_path = os.path.join(self.get_tmpdir(), repo_name)
 
@@ -148,7 +174,7 @@ class gitcheckver(object):
             if repo:
                 self.log.info("Fetched version.")
             try:
-                old_ver = self.conf.get(repo_name, 'ver', fallback="0.0")
+                old_ver = self.repo_conf.get(repo_name, 'ver', fallback="0.0")
                 new_ver, repo_ver = self.check_version(repo,
                                                        old_ver,
                                                        repo_name)
@@ -181,9 +207,17 @@ class gitcheckver(object):
             self.log.info("No new versions found.")
 
     def close(self):
+        # TODO: check if file exists.
         if(self.config_changed):
-            with open(self.confpath, 'w') as configfile:
-                self.conf.write(configfile)
+            try:
+                os.makedirs(os.path.dirname(self.confpath), exist_ok=True)
+                with open(self.confpath, 'w') as configfile:
+                    self.conf.write(configfile)
+                self.log.debug("Updated configuration file.")
+            except Exception as e:
+                self.log.error("Couldn't write the configuration file.")
+                self.log.error("'{}: {}'".format(type(e).__name__,
+                                                 e))
         if(self.tmpdir):
             shutil.rmtree(self.tmpdir)
         sys.exit(0)
@@ -223,7 +257,7 @@ if __name__ == "__main__":
             else:
                 pass
 
-    main = gitcheckver(confpath=_DEFAULTPATH, verbose=verbose_mode)
+    main = gitcheckver(confpath=_DEFAULT_PATH, verbose=verbose_mode)
 
     # Check the versions, then close.
     main.check_versions()
