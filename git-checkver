@@ -34,7 +34,7 @@ except:
 
 _DEFAULT_PATH = os.path.expanduser("~/.gitcheckver/config")
 
-_DEFAULT_CONFIG =     {
+_DEFAULT_CONFIG = {
         "repo_list": "~/.gitcheckver/repolist.cfg"
     }
 
@@ -45,7 +45,7 @@ class gitcheckver(object):
         # initiate logging
         self.log = self.get_log("gitcheckver", verbose)
 
-        # initiate and read configuration
+        # initiate and read general configuration
         self.confpath = os.path.expanduser(confpath)
         self.conf = confparser(
                 default_section="general",
@@ -53,13 +53,15 @@ class gitcheckver(object):
         self.config_changed = False
         self.parse_config(self.confpath, conf=self.conf)
 
-        # get list of repos
-        self.log.debug("repo file: {}.".format(self.conf.get("general",
-            "repo_list")))
-        self.repo_conf = self.parse_config(self.conf.get("general",
-                                                         "repo_list"))
+        # Repo configuration
+        self.repo_path = os.path.expanduser(self.conf.get("general",
+                                                           "repo_list"))
+        self.log.debug("repo file: {}.".format(self.repo_path))
+        self.repo_conf = self.parse_config(self.repo_path)
         self.repos = self.repo_conf.sections()
+        self.repo_conf_changed = False
         self.log.debug("Repoplist {}".format(self.repo_conf.sections()))
+        self.updated = {}
 
         # Used for temporary dir
         self.tmpdir = None
@@ -100,8 +102,6 @@ class gitcheckver(object):
         if not read_config:
             self.log.warning("Found no or empty configuration file.")
 
-        self.log.debug("parse_config: {}".format(conf.sections()))
-
         return conf
 
     def get_tmpdir(self):
@@ -110,15 +110,63 @@ class gitcheckver(object):
 
         return self.tmpdir
 
-    def update_repo(self, repo_url, repo_path=None):
+    def check_versions(self):
 
-        class BreakCallbacks(pygit2.RemoteCallbacks):
-            def credentials(self, url, username_from_url, allowed_types):
-                # TODO: implement actual authentication
-                # see https://github.com/libgit2/pygit2/issues/428
-                # and http://www.pygit2.org/remotes.html?highlight=credentials#credentials
-                raise NotImplementedError(
-                        "Authentication is not yet supported.")
+        self.log.info("Fetching versions for:")
+        # Remember the parent logger
+        old_log = self.log
+
+        # Get the longest repo name for log padding later
+        longest_repo_name = 0
+        for repo_name in self.repos:
+            if len(repo_name) > longest_repo_name:
+                longest_repo_name = len(repo_name)
+
+        # +1 so that even the longest repo name gets one space.
+        longest_repo_name += 1
+
+        # Handle all repos
+        for repo in self.repos:
+            # Get child logger
+            self.log = old_log.getChild(repo)
+
+            # Update repo
+            repo_name = repo
+            repo_url = self.repo_conf.get(repo_name, 'url')
+            repo_path = self.repo_conf.get(repo_name, 'path', fallback=None)
+            if not repo_path:
+                repo_path = os.path.join(self.get_tmpdir(), repo_name)
+
+            repo = self.update_repo(repo_url,
+                                    os.path.expanduser(repo_path))
+
+            # Print status for this repo
+            padding = longest_repo_name - len(repo_name)
+            if repo:
+                msg = "Done."
+            else:
+                msg = "Error."
+
+            self.log.info("{:>{padding}}"
+                          .format(
+                              msg,
+                              # add the length of the message,
+                              # this ligns up "Done" and the longer "Error"
+                              padding=((padding)+len(msg))))
+            try:
+                old_ver = self.repo_conf.get(repo_name, 'ver', fallback="0.0")
+                new_ver, repo_ver = self.check_version(repo,
+                                                       old_ver,
+                                                       repo_name)
+                if (new_ver):
+                    self.updated[repo_name] = repo_ver
+            except Exception:
+                pass
+
+        self.log = old_log
+        self.notify_updated()
+
+    def update_repo(self, repo_url, repo_path=None):
 
         if(os.path.exists(repo_path)):
             repo_path = pygit2.discover_repository(repo_path)
@@ -128,16 +176,16 @@ class gitcheckver(object):
                                .format(repo_url))
             try:
                 for remote in repo.remotes:
-                    remote.fetch(callbacks=BreakCallbacks())
+                    remote.fetch(callbacks=self.BreakCallbacks())
 
             except NotImplementedError as e:
-                self.log.warning("Couldn't update remote {}."
+                self.log.debug("Couldn't update remote {}."
                                  .format(remote.name))
                 self.log.debug("'{}: {}'".format(type(e).__name__,
                                                  e))
                 pass
             except Exception as e:
-                self.log.warning("Couldn't update remote {}."
+                self.log.debug("Couldn't update remote {}."
                                  .format(remote.name))
                 self.log.debug("'{}: {}'".format(type(e).__name__,
                                                  e))
@@ -149,42 +197,19 @@ class gitcheckver(object):
                                                bare=True)
                 self.log.debug("Cloned a copy of {}".format(repo_url))
             except Exception as e:
-                self.log.error("Couldn't update repo.")
+                self.log.debug("Couldn't update repo.")
                 self.log.debug("'{}: {}'".format(type(e).__name__, e))
                 repo = None
 
         return repo
 
-    def check_versions(self):
-
-        self.log.info("Fetching versions.")
-        updated = {}
-        old_log = self.log
-        for repo in self.repos:
-            self.log = old_log.getChild(repo)
-            repo_name = repo
-            repo_url = self.repo_conf.get(repo_name, 'url')
-            repo_path = self.repo_conf.get(repo_name, 'path', fallback=None)
-            if not repo_path:
-                repo_path = os.path.join(self.get_tmpdir(), repo_name)
-
-            repo = self.update_repo(repo_url,
-                                    os.path.expanduser(repo_path))
-
-            if repo:
-                self.log.info("Fetched version.")
-            try:
-                old_ver = self.repo_conf.get(repo_name, 'ver', fallback="0.0")
-                new_ver, repo_ver = self.check_version(repo,
-                                                       old_ver,
-                                                       repo_name)
-                if (new_ver):
-                    updated[repo_name] = repo_ver
-            except Exception:
-                pass
-
-        self.log = old_log
-        self.notify_updated(updated)
+    class BreakCallbacks(pygit2.RemoteCallbacks):
+        def credentials(self, url, username_from_url, allowed_types):
+            # TODO: implement actual authentication
+            # see https://github.com/libgit2/pygit2/issues/428
+            # and http://www.pygit2.org/remotes.html?highlight=credentials#credentials
+            raise NotImplementedError(
+                    "Authentication is not yet supported.")
 
     def check_version(self, repo, old_ver, repo_name):
         tag_regex = re.compile('^refs/tags/')
@@ -193,49 +218,54 @@ class gitcheckver(object):
         repo_ver = re.sub(tag_regex, '', max(tags))
 
         if(repo_ver > old_ver):
-            self.conf.set(repo_name, 'ver', repo_ver)
-            self.config_changed = True
+            self.repo_conf.set(repo_name, 'ver', repo_ver)
+            self.repo_conf_changed = True
             return True, repo_ver
         else:
             return False, None
 
-    def notify_updated(self, updated_dict=dict()):
-        if updated_dict.items():
-            for repo, version in updated_dict.items():
+    def notify_updated(self):
+        if self.updated.items():
+            for repo, version in self.updated.items():
                 self.log.info("{} was updated to {}".format(repo, version))
         else:
             self.log.info("No new versions found.")
 
     def close(self):
-        # TODO: check if file exists.
         if(self.config_changed):
-            try:
-                os.makedirs(os.path.dirname(self.confpath), exist_ok=True)
-                with open(self.confpath, 'w') as configfile:
-                    self.conf.write(configfile)
-                self.log.debug("Updated configuration file.")
-            except Exception as e:
-                self.log.error("Couldn't write the configuration file.")
-                self.log.error("'{}: {}'".format(type(e).__name__,
-                                                 e))
+            self.save_config(self.confpath, self.conf)
+        if(self.repo_conf_changed):
+            self.save_config(self.repo_path, self.repo_conf)
         if(self.tmpdir):
             shutil.rmtree(self.tmpdir)
         sys.exit(0)
+
+    def save_config(self, path,conf):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as configfile:
+                conf.write(configfile)
+                self.log.debug("Updated configuration file {}.".format(path))
+        except Exception as e:
+            self.log.error("Couldn't write the configuration file {}."
+                    .format(path))
+            self.log.error("'{}: {}'".format(type(e).__name__,
+                                             e))
 
 
 if __name__ == "__main__":
     """Run the program with its command line parameters.
 
     Possible Parameters:
-    -v: Run in verbose (print debug messages; off by default)
-    -q: Run silently (only print warnings/errors)
+    -v,-d: Run in verbose (print debug messages; off by default)
+    -q, --quiet: Run silently (only print warnings/errors)
     """
     verbose_mode = logging.INFO
     verbose_changed = False
     if len(sys.argv) > 1:
         for arg in sys.argv[1:]:
             # run in verbose
-            if arg == '-v':
+            if arg == '-v' or arg == '-d':
                 # can't run -v and -q together, take whichever comes first
                 if not verbose_changed:
                     verbose_mode = logging.DEBUG
@@ -245,7 +275,7 @@ if __name__ == "__main__":
                     pass
 
             # run silently
-            elif arg == '-q':
+            elif arg == '-q' or arg == '-quiet':
                 # can't run -v and -q together, take whichever comes first
                 if not verbose_changed:
                     verbose_mode = logging.WARNING
