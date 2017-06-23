@@ -5,12 +5,12 @@
 #  it under the terms of the GNU General Public License as published by
 #  the Free Software Foundation, either version 3 of the License, or
 #  (at your option) any later version.
-
+#
 #  This program is distributed in the hope that it will be useful,
 #  but WITHOUT ANY WARRANTY; without even the implied warranty of
 #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #  GNU General Public License for more details.
-
+#
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -20,6 +20,7 @@ import tempfile
 import shutil
 import re
 import logging
+import logging.handlers
 
 try:
     from configparser import ConfigParser as confparser
@@ -35,7 +36,7 @@ except:
 _DEFAULT_PATH = os.path.expanduser("~/.gitcheckver/config")
 
 _DEFAULT_CONFIG = {
-        "repo_list": "~/.gitcheckver/repolist.cfg"
+        "repo_list": "~/.gitcheckver/repolist.cfg",
     }
 
 class gitcheckver(object):
@@ -52,6 +53,7 @@ class gitcheckver(object):
                 defaults=_DEFAULT_CONFIG)
         self.config_changed = False
         self.parse_config(self.confpath, conf=self.conf)
+        self.add_config_handlers(self.conf)
 
         # Repo configuration
         self.repo_path = os.path.expanduser(self.conf.get("general",
@@ -60,7 +62,9 @@ class gitcheckver(object):
         self.repo_conf = self.parse_config(self.repo_path)
         self.repos = self.repo_conf.sections()
         self.repo_conf_changed = False
-        self.log.debug("Repoplist {}".format(self.repo_conf.sections()))
+        self.log.debug("Repoplist:")
+        for each in self.repos:
+            self.log.debug("{}".format(each))
         self.updated = {}
 
         # Used for temporary dir
@@ -71,9 +75,10 @@ class gitcheckver(object):
         # change its name to something other than root.
         log = logging.getLogger()
         log.name = name
-        log.setLevel(level)
+        log.setLevel(logging.DEBUG)
 
-        # Create handlers and their formatters
+        # Create handlers and their formatters ###############################
+        # /dev/stdout
         sth = logging.StreamHandler()
         stf = logging.Formatter("{name}: {message}", style='{')
         sth.setFormatter(stf)
@@ -81,7 +86,7 @@ class gitcheckver(object):
         # Add handlers to log
         log.addHandler(sth)
 
-        # Set handlers to DEBUG
+        # Set handler levels
         sth.setLevel(level)
 
         return log
@@ -103,6 +108,155 @@ class gitcheckver(object):
             self.log.warning("Found no or empty configuration file.")
 
         return conf
+
+    def add_config_handlers(self, conf=None):
+        """Add extra logger handlers as the configuration dictates.
+
+        :param conf: configparser object,
+                     the configuration whose settings to read
+         """
+
+        # initiate empty variables
+        lfh, emh = None, None
+
+        # if logfile is set log to file
+        if conf.has_option('general', 'logfile'):
+            filep = os.path.expanduser(conf.get('general', 'logfile'))
+            lfh = logging.handlers.RotatingFileHandler(
+                   filep,
+                   maxBytes=(1024*100),
+                   backupCount=1,
+                   delay=True)
+            lff = logging.Formatter(
+                    fmt="{asctime:.19} - {processName}: {message}",
+                    style='{')
+
+            lfh.setFormatter(lff)
+            lfh.setLevel(logging.DEBUG)
+
+        # if email settings are set, send log to email
+        if conf.has_section('email') and conf.getboolean('general', 'email'):
+            try:
+                class BufferingSMTPHandler(logging.handlers.BufferingHandler):
+                    """
+                    Custom SMTP Handler that sends all log records in one email.
+
+                    This is a hybrid between the Buffering and SMTP handler that
+                    sends all records in one email instead of sending individual
+                    emails for each logging message.
+
+                    See https://gist.github.com/anonymous/1379446
+                    """
+
+
+                    def __init__(self,
+                                 mailhost,
+                                 fromaddr,
+                                 toaddrs,
+                                 subject,
+                                 credentials=None,
+                                 secure=None,
+                                 timeout=5.0,
+                                 capacity=0):
+                        try:
+                            super.__init__(self, capacity)
+                        except:
+                            logging.handlers.BufferingHandler.__init__(self, capacity)
+
+                        # set from, to, and subject
+                        self.fromaddr = fromaddr
+                        self.toaddrs = toaddrs
+                        self.subject = subject
+                        # set host information
+                        if isinstance(mailhost, (list, tuple)):
+                            self.mailhost, self.mailport = mailhost
+                        else:
+                            self.mailhost, self.mailport = mailhost, None
+                        # set credentials
+                        if isinstance(credentials, (list, tuple)):
+                            self.username, self.password = credentials
+                        else:
+                            self.username = None
+                        # Set secure and timeout
+                        self.secure = secure,
+                        self.timeout = timeout
+
+                        self.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+
+                    def flush(self):
+                        if len(self.buffer) > 0:
+                            try:
+                                import smtplib
+                                port = self.mailport
+                                if not port:
+                                    port = smtplib.SMTP_PORT
+                                smtp = smtplib.SMTP(self.mailhost,
+                                                    port,
+                                                    timeout=self.timeout)
+                                msg = "From: {0}\r\n"\
+                                      "To:{1}\r\n"\
+                                      "Subject:{2}\r\n\r\n"\
+                                      .format(self.fromaddr,
+                                              self.toaddrs,
+                                              self.subject)
+
+                                for record in self.buffer:
+                                    s = self.format(record)
+                                    msg = msg + s + "\r\n"
+
+                                if self.username:
+                                    if self.secure is not None:
+                                        smtp.ehlo()
+                                        smtp.starttls(*self.secure)
+                                        smtp.ehlo()
+                                    smtp.login(self.username, self.password)
+                                smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+                                smtp.quit()
+                            except:
+                                self.handleError(None)  # no particular record
+                            finally:
+                                self.buffer = []
+                        
+                        def close(self):
+                            """
+                            Close the current handler *without* calling flush()
+
+                            This way an email will only be sent if the logging
+                            exceeds the buffer capacity or if flush() is called
+                            manually
+                            """
+                            logging.Handler.close()
+
+
+                # Transform some data to tuples
+                host = (self.conf.get('email', 'server'),
+                        self.conf.get('email', 'port'))
+                cred = (self.conf.get('email', 'username'),
+                        self.conf.get('email', 'password'))
+
+                # Create handler, set level
+                emh = BufferingSMTPHandler(
+                        mailhost=host,
+                        fromaddr=conf.get('email', 'from'),
+                        toaddrs=conf.get('email', 'to'),
+                        subject=conf.get('email', 'subject'),
+                        credentials=cred,
+                        secure=tuple(),
+                        capacity=50)
+
+                emh.setLevel(logging.INFO)
+            except ImportError:
+                pass
+
+        if lfh:
+            self.log.addHandler(lfh)
+            self.logf = lfh
+            self.log.debug("Using logfile {}".format(filep))
+        if emh:
+            self.log.addHandler(emh)
+            self.email = emh
+            self.log.debug("Sending email log to {}"
+                    .format(conf.get('email', 'to')))
 
     def get_tmpdir(self):
         if not self.tmpdir:
@@ -152,7 +306,7 @@ class gitcheckver(object):
                               msg,
                               # add the length of the message,
                               # this ligns up "Done" and the longer "Error"
-                              padding=((padding)+len(msg))))
+                              padding=(padding+len(msg))))
             try:
                 old_ver = self.repo_conf.get(repo_name, 'ver', fallback="0.0")
                 new_ver, repo_ver = self.check_version(repo,
@@ -228,16 +382,22 @@ class gitcheckver(object):
         if self.updated.items():
             for repo, version in self.updated.items():
                 self.log.info("{} was updated to {}".format(repo, version))
+            self.email.flush()
         else:
             self.log.info("No new versions found.")
 
     def close(self):
-        if(self.config_changed):
+        # Update general config if needed
+        if self.config_changed:
             self.save_config(self.confpath, self.conf)
-        if(self.repo_conf_changed):
+        # Update repolist config if needed
+        if self.repo_conf_changed:
             self.save_config(self.repo_path, self.repo_conf)
-        if(self.tmpdir):
+        # Remove temporary dir if needed
+        if self.tmpdir:
             shutil.rmtree(self.tmpdir)
+        # Close loggers
+        logging.shutdown()
         sys.exit(0)
 
     def save_config(self, path,conf):
