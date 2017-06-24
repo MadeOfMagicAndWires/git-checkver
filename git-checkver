@@ -187,22 +187,25 @@ class gitcheckver(object):
                         if len(self.buffer) > 0:
                             try:
                                 import smtplib
+                                from email.message import EmailMessage
+
                                 port = self.mailport
                                 if not port:
                                     port = smtplib.SMTP_PORT
                                 smtp = smtplib.SMTP(self.mailhost,
                                                     port,
                                                     timeout=self.timeout)
-                                msg = "From: {0}\r\n"\
-                                      "To:{1}\r\n"\
-                                      "Subject:{2}\r\n\r\n"\
-                                      .format(self.fromaddr,
-                                              self.toaddrs,
-                                              self.subject)
+                                msg = EmailMessage()
+                                msg['From'] = self.fromaddr
+                                msg['To'] = self.toaddrs
+                                msg['Subject'] = self.subject
 
+                                content = ""
                                 for record in self.buffer:
                                     s = self.format(record)
-                                    msg = msg + s + "\r\n"
+                                    content = content + s + "\r\n"
+
+                                msg.set_content(content)
 
                                 if self.username:
                                     if self.secure is not None:
@@ -210,13 +213,13 @@ class gitcheckver(object):
                                         smtp.starttls(*self.secure)
                                         smtp.ehlo()
                                     smtp.login(self.username, self.password)
-                                smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+                                smtp.send_message(msg)
                                 smtp.quit()
                             except:
                                 self.handleError(None)  # no particular record
                             finally:
                                 self.buffer = []
-                        
+
                         def close(self):
                             """
                             Close the current handler *without* calling flush()
@@ -225,6 +228,7 @@ class gitcheckver(object):
                             exceeds the buffer capacity or if flush() is called
                             manually
                             """
+                            self.buffer = []
                             logging.Handler.close()
 
 
@@ -397,6 +401,7 @@ class gitcheckver(object):
         if self.tmpdir:
             shutil.rmtree(self.tmpdir)
         # Close loggers
+        self.email.buffer = [] # This is needed so that logging.shutdown won't flush
         logging.shutdown()
         sys.exit(0)
 
